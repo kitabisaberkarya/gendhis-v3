@@ -1,138 +1,134 @@
 // services/questionCardService.ts
 import type { QuestionCardFormData } from '../types';
 import { callGeminiProxyBuffered } from './core/geminiCore';
-import { Type } from '@google/genai';
 
 /**
- * Membangun prompt tugas yang sederhana. Alih-alih memerintahkan format JSON,
- * prompt ini hanya menjelaskan tugas yang harus dilakukan oleh AI.
- * Pengaturan format JSON akan ditangani oleh `responseSchema`.
+ * Membangun prompt lengkap yang menginstruksikan Claude untuk
+ * mengembalikan output dalam format JSON terstruktur.
+ * Karena Claude tidak punya responseSchema seperti Gemini,
+ * kita gunakan prompt engineering yang jelas dan tegas.
  */
-const buildQuestionCardTaskPrompt = (data: QuestionCardFormData): string => {
+const buildQuestionCardPrompt = (data: QuestionCardFormData): string => {
+    const numQuestions = parseInt(data.numQuestions, 10);
+
     return `
-Task: Create a set of educational materials based on the provided topic for an exam.
-This includes two main parts:
-1. A structured grid ("kisi-kisi") that outlines the curriculum objectives, cognitive levels, and indicators for each question.
-2. A series of questions that precisely correspond to each item in the grid, complete with correct answers.
+Anda adalah ahli pendidikan Indonesia yang bertugas membuat soal ujian berkualitas tinggi.
+Buat ${numQuestions} butir soal beserta kisi-kisi berdasarkan data berikut:
 
-Ensure the generated content is high-quality, educationally sound, and directly relevant to the input data provided below.
-
-Input Data:
-- Main Topic: ${data.mainMaterial}
-- Subject: ${data.subject}
-- Number of Questions to Generate: ${data.numQuestions}
-- Question Format: ${data.questionType}
-- Class/Phase: ${data.gradeAndFase}
+- Mata Pelajaran: ${data.subject}
+- Materi Pokok: ${data.mainMaterial}
+- Kelas/Fase: ${data.gradeAndFase}
 - Semester: ${data.semester}
+- Bentuk Soal: ${data.questionType}
+- Jumlah Soal: ${numQuestions}
+
+INSTRUKSI PENTING:
+1. Kembalikan HANYA objek JSON yang valid, tanpa teks tambahan sebelum atau sesudah JSON.
+2. Jangan gunakan markdown code block (\`\`\`json). Langsung mulai dengan karakter { .
+3. Struktur JSON harus persis seperti ini:
+
+{
+  "kisiKisi": [
+    {
+      "no": 1,
+      "kompetensi": "...",
+      "materi": "...",
+      "kelasSmt": "...",
+      "levelKognitif": "C1/C2/C3/...",
+      "indikator": "...",
+      "noSoal": 1,
+      "bentukSoal": "${data.questionType}"
+    }
+  ],
+  "soal": [
+    {
+      "rumusanButirSoal": "1. [Teks soal lengkap. Untuk pilihan ganda, sertakan opsi A, B, C, D, E di dalam string ini]",
+      "kunciJawaban": "[Untuk PG: huruf jawabannya saja, mis. 'C'. Untuk uraian: jawaban ideal]",
+      "skor": 10
+    }
+  ]
+}
+
+Pastikan:
+- Array "kisiKisi" berisi tepat ${numQuestions} item.
+- Array "soal" berisi tepat ${numQuestions} item.
+- Setiap item "soal" berkorespondensi dengan item "kisiKisi" pada nomor yang sama.
+- Level kognitif menggunakan taksonomi Bloom (C1-C6).
+- Seluruh konten dalam Bahasa Indonesia.
 `;
 };
 
+/**
+ * Mem-parsing JSON dari respons Claude.
+ * Menangani kemungkinan Claude membungkus output dengan markdown code block.
+ */
+const parseJsonResponse = (raw: string, expectedCount: number): { kisiKisi: any[]; soal: any[] } => {
+    // Bersihkan markdown code block jika ada
+    let cleaned = raw.trim();
+    if (cleaned.startsWith('```')) {
+        cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+    }
+
+    let parsed: any;
+    try {
+        parsed = JSON.parse(cleaned);
+    } catch {
+        // Coba ekstrak JSON dari dalam teks jika ada
+        const match = cleaned.match(/\{[\s\S]*\}/);
+        if (match) {
+            try {
+                parsed = JSON.parse(match[0]);
+            } catch {
+                throw new Error('AI memberikan respons yang bukan format JSON valid. Coba lagi.');
+            }
+        } else {
+            throw new Error('AI memberikan respons yang bukan format JSON valid. Coba lagi.');
+        }
+    }
+
+    if (!parsed || !Array.isArray(parsed.kisiKisi) || !Array.isArray(parsed.soal)) {
+        throw new Error('Struktur JSON dari AI tidak sesuai. Properti "kisiKisi" dan "soal" tidak ditemukan.');
+    }
+    if (parsed.kisiKisi.length !== parsed.soal.length) {
+        throw new Error(`Jumlah data tidak cocok: ${parsed.kisiKisi.length} kisi-kisi vs ${parsed.soal.length} soal.`);
+    }
+    if (parsed.kisiKisi.length !== expectedCount) {
+        throw new Error(`AI menghasilkan ${parsed.kisiKisi.length} soal, tapi diminta ${expectedCount}. Coba lagi.`);
+    }
+
+    return parsed;
+};
 
 /**
- * Fungsi utama yang telah dirombak untuk men-generate data Kartu Soal.
- * Menggunakan satu panggilan API tunggal dengan skema JSON terstruktur untuk
- * keandalan dan akurasi maksimal.
+ * Fungsi utama: generate Kartu Soal & Kisi-Kisi menggunakan Claude.
  */
 export const generateQuestionCard = async (
     data: QuestionCardFormData,
     onProgress: (message: string) => void,
     apiKey?: string
-): Promise<{ kisiKisi: any[], soal: any[] }> => {
-
+): Promise<{ kisiKisi: any[]; soal: any[] }> => {
     const numQuestions = parseInt(data.numQuestions, 10);
 
-    // Mendefinisikan skema atau "cetak biru" untuk output JSON yang kita inginkan.
-    // Ini adalah cara canggih untuk memastikan AI memberikan data yang kita harapkan.
-    const generationConfig = {
-        responseMimeType: "application/json",
-        responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-                kisiKisi: {
-                    type: Type.ARRAY,
-                    description: `An array of exactly ${numQuestions} grid items ('kisi-kisi').`,
-                    items: {
-                        type: Type.OBJECT,
-                        properties: {
-                            no: { type: Type.NUMBER, description: "Sequential number of the grid item, starting from 1." },
-                            kompetensi: { type: Type.STRING, description: "The relevant learning competency or objective." },
-                            materi: { type: Type.STRING, description: "The specific material covered, should match the main topic." },
-                            kelasSmt: { type: Type.STRING, description: "Class and Semester, e.g., 'X / Ganjil'." },
-                            levelKognitif: { type: Type.STRING, description: "Cognitive level based on Bloom's Taxonomy (e.g., C1, C2, C3)." },
-                            indikator: { type: Type.STRING, description: "A specific and measurable indicator for the question." },
-                            noSoal: { type: Type.NUMBER, description: "The corresponding question number." },
-                            bentukSoal: { type: Type.STRING, description: "The question format, e.g., 'Pilihan Ganda' or 'Uraian'." },
-                        },
-                        required: ['no', 'kompetensi', 'materi', 'kelasSmt', 'levelKognitif', 'indikator', 'noSoal', 'bentukSoal']
-                    }
-                },
-                soal: {
-                    type: Type.ARRAY,
-                    description: `An array of exactly ${numQuestions} questions corresponding to the grid items.`,
-                    items: {
-                        type: Type.OBJECT,
-                        properties: {
-                            rumusanButirSoal: { type: Type.STRING, description: "The full text of the question, including the question number. For multiple choice, include 5 options (A, B, C, D, E) within this string." },
-                            kunciJawaban: { type: Type.STRING, description: "The correct answer. For multiple choice, this MUST be the letter of the option (e.g., 'C'). For essays, it's the ideal answer." },
-                            skor: { type: Type.NUMBER, description: "The score for the question, e.g., 20." },
-                        },
-                        required: ['rumusanButirSoal', 'kunciJawaban', 'skor']
-                    }
-                }
-            },
-            required: ['kisiKisi', 'soal']
-        }
-    };
+    onProgress('Mengirim permintaan ke Claude AI...');
 
-    // Helper untuk memanggil API baik via proxy (buffered) maupun client-side.
-    const callApi = async (prompt: string): Promise<string> => {
-        let result = '';
-        const onChunk = (chunk: string) => { result += chunk; };
-        
-        // Logika disederhanakan: Selalu panggil backend proxy yang lebih stabil.
-        // Kunci API pengguna (jika ada) akan diteruskan ke backend.
-        await callGeminiProxyBuffered(prompt, 'questionCard', onChunk, generationConfig, apiKey);
-        
-        return result;
-    };
-    
-    // Helper untuk mem-parsing dan memvalidasi struktur JSON dari AI.
-    const parseAndValidateJson = (jsonString: string, expectedCount: number): { kisiKisi: any[], soal: any[] } => {
-        let parsedData;
-        try {
-            // Karena AI diinstruksikan mengembalikan JSON, kita bisa langsung parse.
-            parsedData = JSON.parse(jsonString);
-        } catch (error) {
-            console.error("Gagal mem-parsing JSON:", jsonString);
-            throw new Error(`AI memberikan respons yang bukan format JSON yang valid. Ini adalah bug yang jarang terjadi. Coba lagi.`);
-        }
+    const prompt = buildQuestionCardPrompt(data);
+    let rawResponse = '';
 
-        // --- Validasi Struktur dan Jumlah ---
-        if (!parsedData || !Array.isArray(parsedData.kisiKisi) || !Array.isArray(parsedData.soal)) {
-            throw new Error('Struktur JSON dari AI tidak sesuai. Properti "kisiKisi" dan "soal" tidak ditemukan atau bukan array.');
-        }
-        if (parsedData.kisiKisi.length !== parsedData.soal.length) {
-            throw new Error(`Jumlah data tidak cocok. AI menghasilkan ${parsedData.kisiKisi.length} kisi-kisi dan ${parsedData.soal.length} soal. Silakan coba lagi.`);
-        }
-        if (parsedData.kisiKisi.length !== expectedCount) {
-            throw new Error(`Jumlah data yang dihasilkan AI (${parsedData.kisiKisi.length}) tidak sesuai dengan yang diminta (${expectedCount}). Silakan sesuaikan jumlah soal dan coba lagi.`);
-        }
-        
-        return parsedData;
-    };
-    
-    // --- Alur Eksekusi ---
-    onProgress('Mengirim permintaan cerdas ke AI...');
-    const prompt = buildQuestionCardTaskPrompt(data);
-    const fullJsonResponse = await callApi(prompt);
+    await callGeminiProxyBuffered(
+        prompt,
+        'questionCard',
+        (chunk: string) => { rawResponse += chunk; },
+        undefined,
+        apiKey
+    );
 
-    if (!fullJsonResponse) {
-        throw new Error("AI tidak memberikan respons. Ini bisa terjadi karena beban server yang tinggi atau permintaan diblokir. Silakan coba lagi.");
+    if (!rawResponse) {
+        throw new Error('AI tidak memberikan respons. Server mungkin sibuk. Silakan coba lagi.');
     }
 
-    onProgress('Menerima data... Memvalidasi struktur...');
-    const validatedData = parseAndValidateJson(fullJsonResponse, numQuestions);
-    
+    onProgress('Menerima data... Memvalidasi struktur JSON...');
+    const result = parseJsonResponse(rawResponse, numQuestions);
+
     onProgress('Semua data berhasil dibuat & divalidasi!');
-    return validatedData;
+    return result;
 };
