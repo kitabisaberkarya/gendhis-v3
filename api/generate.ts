@@ -4,7 +4,8 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import Anthropic from '@anthropic-ai/sdk';
 
-const CLAUDE_MODEL = 'claude-sonnet-4-6';
+// Model stable yang sudah terbukti berjalan di semua API key
+const CLAUDE_MODEL = 'claude-3-5-sonnet-20241022';
 const MAX_PROMPT_LENGTH = 50000;
 
 const sanitizeInput = (input: string, maxLen = MAX_PROMPT_LENGTH): string => {
@@ -73,11 +74,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   if (!apiKey) {
+    console.error('[Gendhis] ANTHROPIC_API_KEY tidak ditemukan di environment variables.');
     return res.status(503).json({
       error: 'API Key Claude belum dikonfigurasi di server.',
-      suggestion: 'Hubungi admin atau masukkan API Key Anda sendiri (format: sk-ant-...).',
+      suggestion: 'Buka Vercel Dashboard → Settings → Environment Variables → tambah ANTHROPIC_API_KEY → Redeploy.',
     });
   }
+
+  console.log(`[Gendhis] Request: featureType=${featureType}, keySource=${isUserKey ? 'user' : 'server'}, model=${CLAUDE_MODEL}`);
 
   try {
     const anthropic = new Anthropic({ apiKey });
@@ -129,6 +133,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   } catch (error: any) {
     const msg: string = error?.message || String(error);
     const status: number = error?.status || 500;
+    console.error(`[Gendhis] Claude API Error — status=${status}, message=${msg}`);
 
     if (status === 401 || msg.includes('invalid x-api-key') || msg.includes('authentication')) {
       return res.status(401).json({
