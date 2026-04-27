@@ -1,5 +1,18 @@
-
 {
+  "functions": {
+    "api/generate.ts": {
+      "maxDuration": 60
+    },
+    "api/create-payment.ts": {
+      "maxDuration": 30
+    },
+    "api/payment-webhook.ts": {
+      "maxDuration": 30
+    },
+    "api/download.ts": {
+      "maxDuration": 30
+    }
+  },
   "rewrites": [
     {
       "source": "/api/:path*",
