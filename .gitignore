@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+
+# Claude Code local settings
+.claude/
+
+# Environment variables — JANGAN pernah di-commit!
+.env
+.env.local
+.env.production
+
+# Build output
+dist/
+.vercel/
+
+# OS & editor
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/

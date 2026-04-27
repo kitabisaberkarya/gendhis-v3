@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "NodeNext",
+    "jsx": "react-jsx",
+    "strict": true,
+    "moduleResolution": "NodeNext",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "lib": ["DOM", "DOM.Iterable", "ESNext"],
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "types": ["@types/node"]
+  },
+  "include": [
+    "App.tsx",
+    "index.tsx",
+    "types.ts",
+    "globals.d.ts",
+    "components/**/*.tsx",
+    "services/**/*.ts",
+    "api/**/*.ts"
+  ],
+  "exclude": ["node_modules", "dist"]
+}
